@@ -1,0 +1,1199 @@
+Appendix A: Codes for Chapter Four
+Import the required packages
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+%matplotlib inline
+from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler
+from statsmodels.tools.eval_measures import rmse
+from keras.layers import Dense
+from keras.preprocessing.sequence import TimeseriesGenerator
+from keras.models import Sequential
+from keras.layers import LSTM
+from keras.layers import GRU
+from keras.layers import Dropout
+from keras.layers import Bidirectional
+from tensorflow.keras import regularizers
+from keras.layers import TimeDistributed
+from tensorflow import keras
+from tensorflow.keras import layers
+from kerastuner.tuners import RandomSearch
+from keras.layers import RepeatVector
+from keras.optimizers import Adam
+from timeit import default_timer as timer
+from keras.callbacks import EarlyStopping
+from sklearn.metrics import mean_squared_error,mean_absolute_percentage_error,r2_score
+from sklearn.metrics import mean_absolute_error
+from keras.metrics import Mean
+from scipy.stats import pearsonr
+import hydroeval as he
+from math import sqrt
+from pandas import DataFrame
+from matplotlib.ticker import PercentFormatter
+from keras.utils.vis_utils import plot_model
+import os
+import csv
+import warnings
+warnings.filterwarnings("ignore")
+Read input data
+data = pd.read_excel("filename.xlsx")
+timeseries = pd.read_excel("filename.xlsx",index_col='date')
+timeseries.streamflow = pd.to_numeric(timeseries.streamflow,errors='coerce')
+timeseries.tail(5)
+Fill missing data
+ts = timeseries.interpolate(method ="linear",inplace = False)
+Splitting data for training and testing (80/20)
+A=length of test data set
+train, test = ts[:-A], ts[-A:]
+Timeseries plot for split data
+plt.rcParams["font.family"]="Times New Roman"
+plt.figure(figsize=(27,4),dpi = 300, edgecolor="y")
+plt.plot(train['streamflow'],color = "blue",alpha = 1,linestyle ="-",label = "Training")
+plt.plot(test["streamflow"],color = "orange",alpha =1,linestyle ="--",label = "Testing")
+plt.title("Catchment_Name_Streamflow_Timeseries", fontsize = 32)
+plt.legend(fontsize = 25)
+plt.xlabel("Time(days)",size=27)
+plt.ylabel("Q(m3/sec)",size=27)
+plt.xticks(size=27,color = "black")
+plt.yticks(size=27,color = "black")
+plt.grid(True,alpha = 0.1)
+plt.savefig("Splited_Catchment_Name")
+Box plot for split data
+plt.rcParams["font.family"]="Times New Roman"
+fig = plt.figure(figsize=(7,4),dpi = 300, edgecolor="y")
+Total = ts["streamflow"]
+Train = train['streamflow']
+Test=test["streamflow"]
+data = [Total,Train,Test]
+Creating axes instance 
+ax = fig.add_axes([1,1,1,1]) 
+Creating plot 
+bp = ax.boxplot(data,0,'',showmeans=True, patch_artist = True) 
+ax.set_xticklabels(['Total', 'Train', 'Test']) 
+colors = ['black', 'blue', 'orange'] 
+for patch, color in zip(bp['boxes'], colors): 
+      patch.set_facecolor(color)   
+Changing color and linewidth of whiskers 
+for whisker in bp['whiskers']: 
+       whisker.set(color ='black', linewidth = 1.5, linestyle =":") 
+Changing color and linewidth of caps 
+for cap in bp['caps']: 
+    cap.set(color ='black', linewidth = 2) 
+Changing color and linewidth of medians 
+for median in bp['medians']: 
+    median.set(color ='white', linewidth = 3) 
+Changing style of fliers 
+for flier in bp['fliers']: 
+    flier.set(marker ='D', color ='black', alpha = 1) 
+ax.get_xaxis().tick_bottom() 
+ax.get_yaxis().tick_left() 
+plt.xlabel("Splitted data",size=15)
+plt.ylabel("Q(m3/sec)",size=15)
+plt.xticks(size=17,color="black")
+plt.yticks(size=17,color="black")
+plt.grid(True,alpha = 0.1)
+plt.savefig("discriptive_boxplot_catchment_name",bbox_inches="tight")
+Data normalization for training data
+lag= number of lags
+scaler = StandardScaler()
+train_data = scaler.fit_transform(train)
+x_train=[]
+y_train=[]
+for i in range (lag,train.shape[0]):
+    x_train.append(train_data[i-lag:i])
+    y_train.append(train_data[i,0])
+Data normalization for test Data¶
+past_days = train.tail(lag)
+test_data = past_days.append(test,ignore_index=True)
+inputs_test = scaler.fit_transform(test_data)
+x_test = []
+y_test = []
+for i in range(lag,test_data.shape[0]):
+    x_test.append(inputs_test[i-lag:i])
+    y_test.append(inputs_test[i,0])
+x_train,y_train = np.array(x_train),np.array(y_train)
+x_test,y_test = np.array(x_test),np.array(y_test)
+n_input= x_train.shape[1]
+x_train = x_train.reshape((x_train.shape[0], n_input))
+x_test = x_test.reshape((x_test.shape[0], n_input))
+n_features = 1
+Parameter optimization using Keras tuner
+def build_model(hp):
+    model = keras.Sequential([
+     keras.layers.Dense(units=hp.Int('MLP_l1_units',min_value=5,max_value=40,step=5),
+                                    activation='relu',input_dim = n_input),
+     keras.layers.Dropout(hp.Float('dropout1',min_value=0.0,max_value=0.3,default=0.2,step=0.1)),
+     keras.layers.Dense(units=hp.Int('MLP_l2_units',min_value=5,max_value=40,step=5),activation='relu'),
+        keras.layers.Dense(1,activation='linear') ])
+    model.compile(optimizer=keras.optimizers.Adam(
+            hp.Choice('learning_rate',values=[1e-2, 1e-3, 1e-4])),loss="mse",metrics=['mse','mae','mape'])
+    model.fit(x_train,y_train,epochs=hp.Int("num_epoches",min_value=10,max_value=100,
+                                           step=10),batch_size=hp.Int("num_batch_size",min_value=10,max_value=100,
+                                           step=10),validation_data=(x_test,y_test),verbose=1,shuffle = False)
+    return model
+tuner = RandomSearch(build_model,objective="val_loss",max_trials=20,executions_per_trial=3,
+   	 directory='Catchment_name_MLP',project_name=' Catchment_name _daily_time_step_MLP')
+tuner.search_space_summary()
+tuner.search(x_train,y_train,validation_data=(x_test,y_test),verbose=1,shuffle = False)
+tuner.results_summary()
+Model training using optimal parameters
+class TimingCallback(keras.callbacks.Callback):
+    def __init__(self, logs={}):
+        self.logs=[]
+    def on_epoch_begin(self, epoch, logs={}):
+        self.starttime = timer()
+    def on_epoch_end(self, epoch, logs={}):
+        self.logs.append(timer()-self.starttime)
+cb = TimingCallback()
+train_loss = pd.DataFrame()
+val_loss = pd.DataFrame()
+train_mae = pd.DataFrame()
+val_mae = pd.DataFrame()
+for i in range(number of times model trains):
+    modelT = Sequential()
+For MLP 
+    modelT.add(Dense(25,activation ="relu", input_dim = n_input))
+    modelT.add(Dropout(0.0))
+    modelT.add(Dense(40, activation ="relu"))
+    modelT.add(Dropout(0.1))
+    modelT.add(Dense(1))
+For Bi-LSTM
+ modelT.add(Bidirectional(LSTM(10,activation ="relu", return_sequences = True)))
+ modelT.add(Dropout(0.0))
+ modelT.add(Bidirectional(LSTM(5, activation ="relu")))
+ modelT.add(Dropout(0.1))
+ modelT.add(Dense(1))
+For GRU
+ modelT.add(GRU(25,activation ="relu", return_sequences = True))
+ modelT.add(Dropout(0.1))
+ modelT.add(GRU(20, activation ="relu"))
+ modelT.add(Dropout(0.1))
+ modelT.add(Dense(1))
+For LSTM
+modelT.add(LSTM(25,activation ="relu", return_sequences = True))
+modelT.add(Dropout(0.1))
+modelT.add(LSTM(20, activation ="relu"))
+modelT.add(Dropout(0.1))
+modelT.add(Dense(1))
+   opt = Adam(learning_rate=0.0001)
+   modelT.compile(optimizer = opt, loss = "mse", metrics=['mse','mae','mape'])
+history =modelT.fit(x_train,y_train,epochs=90,batch_size=60,callbacks=[cb],validation_data=(x_test,y_test),verbose=1,shuffle = False)
+    train_loss[str(i)] = history.history["loss"]
+    val_loss[str(i)] = history.history["val_loss"]  
+    train_mae[str(i)] = history.history["mae"]
+    val_mae[str(i)] = history.history["val_mae"]
+Model internal network structure graph
+plot_model(modelT, to_file='Catchment_name_MLP_time_step_plot.png', show_shapes=True, show_layer_names=True,   dpi=300)
+plt.savefig(' Catchment_name _GRU_time_step_plot.png')
+Model loss function graph
+plt.rcParams["font.family"]="Times New Roman"
+plt.figure(figsize=(7,4),dpi = 300, edgecolor="y")
+plt.plot(train_loss.iloc[0:0,0:1],color = "gray",alpha =1,linestyle ="-",label = "Train", linewidth = 0.6)
+plt.plot(train_loss,color = "gray",alpha =1,linestyle ="-", linewidth = 0.6)
+plt.legend(  loc= "upper right",fontsize = 7)
+plt.plot(val_loss.iloc[0:0,0:1],color = "cyan",alpha =1,linestyle ="--",label = "Test", linewidth = 0.6)
+plt.plot(val_loss,color = "cyan",alpha =1,linestyle ="--",linewidth = 0.6)
+plt.legend(  loc= "upper right",fontsize = 19)
+plt.title( "Catchment_name \n MLP time step",fontsize=17,pad=2)
+plt.ylabel( "loss")
+plt.xlabel( "epoch")
+plt.xlabel("Epochs",size=19,labelpad=-2)
+plt.ylabel("Loss",size=19)
+plt.xticks(size=15,color = "black")
+plt.yticks(size=15,color = "black")
+plt.savefig("Catchment_name_MLP_time_step_loss") 
+Prediction test with the trained model
+y_pred = modelT.predict(x_test)
+y_pred = scaler.inverse_transform(y_pred)
+y_test = scaler.inverse_transform(y_test)
+timeseriesdate = list(data)[0:1]
+test = data[-1315:]
+date = test[timeseriesdate]
+y_pred_data = pd.DataFrame(y_pred)
+y_test_data = pd.DataFrame(y_test)
+date.set_index("date")
+xt=date["date"]
+xt= pd.DataFrame(xt)
+xt=xt.reset_index(inplace=False)
+xt=xt.drop("index",axis=1)
+yt= pd.DataFrame(y_test)
+yt=yt.reset_index(inplace=False)
+yt=yt.drop("index",axis=1)
+yp=y_pred_data[0]
+yp=pd.DataFrame(yp)
+y_pred.shape
+Predict and test timeseries comparison graph
+plt.rcParams["font.family"]="Times New Roman"
+plt.figure(figsize=(7,4),dpi =300, edgecolor="y")
+plt.plot(y_test,color = "cyan",alpha = 1,linestyle ="--",label = "Test")
+plt.plot(y_pred,color = "grey",alpha =1,linestyle ="-",label = "Forecasted")
+plt.title(" Catchment_name \n Model, Time_step",fontsize = 17, pad=1)
+plt.legend(fontsize = 19)
+plt.xlabel("Time(days)",size=19,labelpad=-2)
+plt.ylabel("Q(m3/sec)",size=19)
+plt.xticks(size=15,color = "black")
+plt.yticks(size=15,color = "black")
+plt.grid(True,alpha = 0.03)
+plt.savefig("Catchment_name_Model_time_step_test+forecasted")
+Evaluate the prediction with scatter Plot
+plt.rcParams["font.family"]="Times New Roman"
+plt.figure(figsize=(6,4),dpi =300, edgecolor="y")
+plt.scatter(yp,yt,color = "grey",alpha = 0.3,linestyle ="-",label = "Data Points")
+plt.plot(y_test,y_test,color = "cyan",alpha = 1,linestyle ="-",label = "Linear Fit")
+plt.xlabel("Predicted Q(m3/sec)",size=19,labelpad=-1)
+plt.ylabel("Test Q(m3/sec)",size=19)
+plt.xticks(size=10,color = "black")
+plt.yticks(size=10,color = "black")
+plt.grid(True,alpha = 0.03)
+plt.savefig("Catchment_Model_Time_Step_scatter")
+Model evaluations
+mse = mean_squared_error(y_test,y_pred)         
+mae = mean_absolute_error(y_test,y_pred)
+mape= mean_absolute_percentage_error(y_test,y_pred)
+r2 = r2_score(y_test,y_pred)
+std = np.std(y_pred)
+corr=pearsonr(y_pred_data[0],y_test_data[0])[0]
+rmse = sqrt(mse)
+epochs = number of epoches
+print('RMSE: %f' % rmse)
+print('MAE: %f' %mae)
+print('MAPE: %f' %mape)
+print('corr: %f' %corr)
+print('std: %f' %std)
+print('R2: %f' %r2)
+print(sum(cb.logs)/epochs)
+Save model residuals to draw box plots of spread of prediction error (PE, m3 s−1)
+residual = [abs(y_test[i]-y_pred[i]) for i in range(len(y_pred))]
+residuals = DataFrame(residual)
+p = plt.hist(residuals)
+y=[]
+x=p[1][0:5]
+for i in range(len(p[0][0:5])):
+    y.append((p[0][i]/sum(p[0]))*100)
+y=np.round(y,1)
+def Rho (residuals): 
+        residuals.to_csv('Residuals_model_timestep.csv')
+        path = r'C:\Users\EYOB\Desktop\manuscript_experiment'
+        extension = 'csv'
+        os.chdir(path)          
+Rho (residuals) 
+Appendix B: Codes for Chapter Five
+Import the required packages
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+%matplotlib inline
+from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler
+from statsmodels.tools.eval_measures import rmse
+from keras.layers import Dense
+from keras.preprocessing.sequence import TimeseriesGenerator
+from keras.models import Sequential
+from keras.layers import LSTM
+from keras.layers import GRU
+from keras.layers import Dropout
+from keras.layers import Bidirectional
+from keras.layers import Flatten
+from tensorflow.keras import regularizers
+from keras.layers import TimeDistributed
+from tensorflow import keras
+from tensorflow.keras import layers
+from kerastuner.tuners import RandomSearch
+from keras.layers import RepeatVector
+from keras.layers.convolutional import Conv1D
+from keras.layers.convolutional import MaxPooling1D,AveragePooling1D
+from keras.callbacks import EarlyStopping
+from keras.optimizers import Adam
+from timeit import default_timer as timer
+from keras.utils.vis_utils import plot_model
+import warnings
+warnings.filterwarnings("ignore")
+Read input data
+timeseries = pd.read_excel("Catchment _data.xlsx")
+timeseries.date = pd.to_datetime(timeseries.date,errors='coerce')
+ts = timeseries
+ts=ts.rolling(30).mean()
+ts.drop([0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28],axis=0,inplace=True)
+Split the data
+A = length of test data
+n_past = 30
+train,test = ts[:-A],ts[-A-n_past:]
+Data preparation 
+colsx = list(ts)[1:20]
+colsy = list(ts)[0]
+df_for_trainingx = train[colsx].astype(float)
+df_for_testx = test[colsx].astype(float)
+df_for_trainingy = train[colsy].astype(float)
+df_for_testy = test[colsy].astype(float)
+df_for_trainingy = np.array(df_for_trainingy)
+df_for_testy = np.array(df_for_testy)
+df_for_trainingy=df_for_trainingy.reshape(df_for_trainingy.shape[0], 1)
+df_for_testy=df_for_testy.reshape(df_for_testy.shape[0], 1)
+Normalize and convert training data to supervised learning
+scalerx = StandardScaler()
+train_data_scaledx = scalerx.fit_transform(df_for_trainingx)
+scalery = StandardScaler()
+train_data_scaledy = scalery.fit_transform(df_for_trainingy)
+trainx = []
+trainy = []
+n_past = 30
+n_step = 0
+for i in range(n_past, len(train_data_scaledy)):
+    trainx.append(train_data_scaledx[i-n_past:i-n_step, 0:df_for_trainingx.shape[1]])
+    trainy.append(train_data_scaledy[i-n_step-1:i-n_step,0])
+trainx, trainy = np.array(trainx), np.array(trainy)
+Normalize and convert test data to supervised learning
+scalerx = StandardScaler()
+test_data_scaledx = scalerx.fit_transform(df_for_testx)
+scalery = StandardScaler()
+test_data_scaledy = scalery.fit_transform(df_for_testy)
+testx = []
+testy = []
+n_past = 30
+n_step = 0
+for i in range(n_past, len(test_data_scaledy)):
+    testx.append(test_data_scaledx[i-n_past:i-n_step, 0:df_for_trainingx.shape[1]])
+    testy.append(test_data_scaledy[i-n_step-1:i-n_step,0])
+testx, testy = np.array(testx), np.array(testy)
+Shape the input into the required dimensions for MLP
+n_input = trainx.shape[1] * trainx.shape[2]
+trainx = trainx.reshape((trainx.shape[0], n_input))
+testx = testx.reshape((testx.shape[0], n_input))
+trainx.shape
+Shape the input into the required dimensions for hybrid models
+n_input= trainx.shape[1]
+n_features = 5
+n_seq = 1
+trainx = trainx.reshape((trainx.shape[0],n_seq, n_input,n_features))
+testx = testx.reshape((testx.shape[0],n_seq, n_input,n_features))
+trainx.shape 
+Parameter optimization using Keras tuner for hybrid models
+def build_model(hp):
+    model = keras.Sequential([
+     keras.layers.TimeDistributed(keras.layers.Conv1D(filters=hp.Int("conv_1_filter",min_value=8, 			max_value=32, step=8),
+                                 kernel_size=hp.Choice("conv_1_kernal",values= [2,3]),
+                                 activation ="relu",
+                                 input_shape = ( None, n_input, n_features))),
+     keras.layers.TimeDistributed(keras.layers.AveragePooling1D(pool_size=hp.Choice
+("conv_1_pool_size",values=[2,3]))),
+     keras.layers.TimeDistributed(keras.layers.Conv1D(filters=hp.Int
+("conv_2_filter",min_value=8, max_value=32, step=8),
+                                 kernel_size=hp.Choice("conv_2_kernal",values= [2,3]),
+                                 activation ="relu",
+                                 input_shape = ( None, n_input, n_features))),
+     keras.layers.TimeDistributed(keras.layers.AveragePooling1D(pool_size=hp.Choice
+("conv_2_pool_size",values=[2,3]))),
+     keras.layers.TimeDistributed(keras.layers.Flatten()),
+     keras.layers.LSTM(units=hp.Int('lstm_l1_units',min_value=5,max_value=30,step=5),
+                                           activation='relu',return_sequences = True),
+     keras.layers.Dropout(hp.Float(
+                    'dropout1',  min_value=0.0,max_value=0.3,default=0.2,  step=0.1)),
+     keras.layers.LSTM(units=hp.Int('lstm_l2_units',min_value=5,max_value=30,step=5),activation='relu'),
+     keras.layers.Dropout(hp.Float( 'dropout2',min_value=0.0,max_value=0.3,default=0.2,step=0.1)),
+     keras.layers.Dense(1,activation='linear')])
+    model.compile(optimizer=keras.optimizers.Adam(
+            hp.Choice('learning_rate',values=[1e-2, 1e-3, 1e-4])),loss="mse",metrics=['mse','mae','mape'])
+    model.fit(trainx,trainy,epochs=hp.Int("num_epoches",min_value=10,max_value=100,
+                                           step=10),batch_size=hp.Int("num_batch_size",min_value=10,max_value=100,
+                                           step=10),validation_data=(testx, testy),verbose=1,shuffle = False)
+    return model
+tuner = RandomSearch(build_model,objective="val_loss",max_trials=20,executions_per_trial=3,
+    directory='catchment_monthly_p_cnn-lstm',project_name='catchment_cnn-lstm')
+tuner.search_space_summary()
+tuner.search(trainx,trainy,validation_data=(testx, testy),verbose=1,shuffle = False)
+tuner.results_summary()
+Model training using optimal parameters for hybrid models
+class TimingCallback(keras.callbacks.Callback):
+    def __init__(self, logs={}):
+        self.logs=[]
+    def on_epoch_begin(self, epoch, logs={}):
+        self.starttime = timer()
+    def on_epoch_end(self, epoch, logs={}):
+        self.logs.append(timer()-self.starttime)
+cb = TimingCallback()
+train_loss = pd.DataFrame()
+val_loss = pd.DataFrame()
+train_mae = pd.DataFrame()
+val_mae = pd.DataFrame()
+for i in range(1):
+    modelT = Sequential()
+    modelT.add(TimeDistributed(Conv1D(filters=16, kernel_size=2, activation ="relu"),input_shape = ( None, n_input, n_features)))
+    modelT.add(TimeDistributed(AveragePooling1D(pool_size=2)))
+    modelT.add(TimeDistributed(Conv1D(filters=24, kernel_size=2, activation ="relu"),input_shape = ( None, n_input, n_features)))
+modelT.add(TimeDistributed(AveragePooling1D(pool_size=3)))#modelT.add(TimeDistributed(Conv1D(filters=8, kernel_size=2, activation ="relu")))
+    modelT.add(TimeDistributed(Flatten()))
+    modelT.add(LSTM(25,activation ="relu", return_sequences = True))
+    modelT.add(Dropout(0.1))
+    modelT.add(LSTM(20, activation ="relu"))
+    modelT.add(Dropout(0.2))
+    modelT.add(Dense(1))
+    opt = Adam(learning_rate=0.0001)
+    modelT.compile(optimizer = opt, loss = "mse", metrics=['mse','mae','mape'])
+    history = modelT.fit(trainx,trainy,epochs=80,batch_size=40,callbacks=[cb],validation_data=(testx, testy),verbose=1,shuffle = False)
+    train_loss[str(i)] = history.history["loss"]
+    val_loss[str(i)] = history.history["val_loss"]  
+    train_mae[str(i)] = history.history["mae"]
+    val_mae[str(i)] = history.history["val_mae"]
+Plot the loss function to inspect under and over fitting
+plot_model(modelT, to_file='model_plot.png', show_shapes=True, show_layer_names=True)
+
+ 
+Appendix C: Codes for Chapter Six and Seven
+Import the required packages
+import numpy as np
+import pandas as pd
+from math import sqrt
+from numpy import hstack
+from numpy import vstack
+from numpy import asarray
+from sklearn.metrics import mean_squared_error,mean_absolute_percentage_error,r2_score
+from sklearn.metrics import mean_absolute_error
+from sklearn.metrics import median_absolute_error
+from keras.metrics import Mean
+from scipy.stats import pearsonr
+import hydroeval as he
+from math import sqrt
+from math import log
+from keras.metrics import Mean
+from hydroeval import nse,evaluator 
+from math import sqrt
+from pandas import DataFrame
+from timeit import default_timer as timer
+from matplotlib.ticker import PercentFormatter
+import os
+import csv
+from sklearn.linear_model import Lasso
+import xgboost
+from xgboost import XGBRegressor
+from sklearn.datasets import make_regression
+from sklearn.model_selection import KFold
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+from statsmodels.tools import add_constant
+from itertools import combinations
+from statsmodels.regression.linear_model import OLS, GLS, WLS
+from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import ElasticNet
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.svm import SVR
+from keras.models import Sequential
+from sklearn.ensemble import AdaBoostRegressor
+from sklearn.ensemble import BaggingRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import ExtraTreesRegressor
+from keras.optimizers import Adam
+import matplotlib.pyplot as plt
+%matplotlib inline
+from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler
+from statsmodels.tools.eval_measures import rmse
+from keras.layers import Dense
+from keras.preprocessing.sequence import TimeseriesGenerator
+from keras.models import Sequential
+from keras.layers import LSTM
+from keras.layers import GRU
+from keras.layers import Dropout
+from keras.layers import Bidirectional
+from keras.layers import Flatten
+from tensorflow.keras import regularizers
+from keras.layers import TimeDistributed
+from tensorflow import keras
+from tensorflow.keras import layers
+from keras.optimizers import Adam
+from timeit import default_timer as timer
+from kerastuner.tuners import RandomSearch
+from keras.layers import RepeatVector
+from keras.models import load_model
+import pickle
+from timeit import default_timer as timer
+from keras.layers.convolutional import Conv1D
+from keras.layers.convolutional import MaxPooling1D,AveragePooling1D
+from keras.callbacks import EarlyStopping
+import warnings
+warnings.filterwarnings("ignore")
+Read input data
+timeseries = pd.read_excel("Catchment_data.xlsx")
+timeseries.date = pd.to_datetime(timeseries.date,errors='coerce')
+Splitting data for training and testing (80/20)
+n_past = 59 # 30 past days for training and 29 for rolling(mean)
+A = Length of test data
+train,test = ts[:-A],ts[-A-n_past:]
+Prepare input and output columns here
+colsx = list(ts)[2:54]
+colsy = list(ts)[1]
+Draw all variables into training and testing
+df_for_trainingx = train[colsx].astype(float)
+df_for_testx = test[colsx].astype(float)
+df_for_trainingy = train[colsy].astype(float)
+df_for_testy = test[colsy].astype(float)
+df_for_trainingy = np.array(df_for_trainingy)
+df_for_testy = np.array(df_for_testy)
+df_for_trainingy=df_for_trainingy.reshape(df_for_trainingy.shape[0], 1)
+df_for_testy=df_for_testy.reshape(df_for_testy.shape[0], 1)
+Roll training data monthly and drop null time window
+df_for_trainingx=df_for_trainingx.rolling(30).mean()
+df_for_testx=df_for_testx.rolling(30).mean()
+d=df_for_trainingy.shape[0]-n_past # number of training data sets-rolling time window
+df_for_trainingx.drop([0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28],axis=0,inplace=True)
+df_for_testx.drop([0+d,1+d,2+d,3+d,4+d,5+d,6+d,7+d,8+d,9+d,10+d,11+d,12+d,13+d,14+d,15+d,16+d,17+d,18+d,19+d,20+d,21+d,22+d,23+d,24+d,25+d,26+d,27+d,28+d],axis=0,inplace=True)
+df_for_testy=pd.DataFrame(df_for_testy)
+df_for_trainingy=pd.DataFrame(df_for_trainingy)
+df_for_trainingy.drop([0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28],axis=0,inplace=True)
+df_for_testy.drop([0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28],axis=0,inplace=True)
+df_for_trainingy.shape,df_for_testy.shape,df_for_trainingx.shape,df_for_testx.shape
+Standardize the data using MinMaxScaler
+scalerx = MinMaxScaler()
+train_data_scaledx = scalerx.fit_transform(df_for_trainingx)
+scalery = MinMaxScaler()
+train_data_scaledy = scalery.fit_transform(df_for_trainingy)
+test_data_scaledx = scalerx.fit_transform(df_for_testx)
+test_data_scaledy = scalery.fit_transform(df_for_testy)
+Arrange the training data for supervised learning
+trainx = []
+trainy = []
+n_past = 30
+n_step = 0
+for i in range(n_past, len(train_data_scaledy)):
+    trainx.append(train_data_scaledx[i-n_past:i-n_step, 0:df_for_trainingx.shape[1]])
+    trainy.append(train_data_scaledy[i-n_step-1:i-n_step,0])
+trainx, trainy = np.array(trainx), np.array(trainy)
+Arrange the test data for supervised learning
+testx = []
+testy = []
+n_past = 30
+n_step = 0
+for i in range(n_past, len(test_data_scaledy)):
+    testx.append(test_data_scaledx[i-n_past:i-n_step, 0:df_for_trainingx.shape[1]])
+    testy.append(test_data_scaledy[i-n_step-1:i-n_step,0])
+testx, testy = np.array(testx), np.array(testy)
+Design the eight base models for super ensemble model
+GRU base model
+def get_out_of_fold_predictions(X, y):
+    meta_X3, meta_y3 = list(), list()
+    n_input = X.shape[1] * X.shape[2]
+    X = X.reshape((X.shape[0], n_input))
+Define split of data
+    kfold = KFold(n_splits=5, shuffle=False)
+Enumerate splits
+    for train_ix, test_ix in kfold.split(X):
+        fold_yhats = list()
+Get data
+        train_X, test_X = X[train_ix], X[test_ix]
+        train_y, test_y = y[train_ix], y[test_ix]
+        meta_y3.extend(test_y)
+Fit and make predictions with each sub-model
+        class TimingCallback(keras.callbacks.Callback):
+            def __init__(self, logs={}):
+                self.logs=[]
+            def on_epoch_begin(self, epoch, logs={}):
+                self.starttime = timer()
+            def on_epoch_end(self, epoch, logs={}):
+                self.logs.append(timer()-self.starttime)
+        cb = TimingCallback()
+        train_loss = pd.DataFrame()
+        train_mae = pd.DataFrame()
+        model = Sequential()
+        model.add(Dense(35, activation ="relu",input_dim = n_input))#
+        model.add(Dropout(0))
+        model.add(Dense(10, activation ="relu"))
+        model.add(Dense(1))
+        opt = Adam(learning_rate=0.001)
+        model.compile(optimizer = opt, loss = "mse", metrics=['mse','mae','mape'])
+        history = model.fit(train_X,train_y,epochs=30,batch_size=10,callbacks=[cb],verbose=1,shuffle = False)
+        train_loss[str(i)] = history.history["loss"] 
+        train_mae[str(i)] = history.history["mae"]
+Store columns
+        filename = 'Borkena_BMASE_Models_FI/model_' + "3"+ '.h5'
+        model.save(filename)
+        print('>Saved %s' % filename)       
+        yhat = model.predict(test_X)
+        fold_yhats.append(yhat.reshape(len(yhat),1))
+Store fold yhats as columns
+        meta_X3.append(hstack(fold_yhats))
+    return vstack(meta_X3), asarray(meta_y3)
+LSTM base model
+def get_out_of_fold_predictions2(X, y):
+    meta_X2, meta_y2 = list(), list()
+    n_input= X.shape[1]
+    n_features = 51
+    n_seq = 1
+Define split of data
+    kfold = KFold(n_splits=5, shuffle=False)    
+Enumerate splits
+    for train_ix, test_ix in kfold.split(X):
+        fold_yhats = list()
+Get data
+        train_X, test_X = X[train_ix], X[test_ix]
+        train_y, test_y = y[train_ix], y[test_ix]
+        meta_y2.extend(test_y)
+        class TimingCallback(keras.callbacks.Callback):
+            def __init__(self, logs={}):
+                self.logs=[]
+            def on_epoch_begin(self, epoch, logs={}):
+                self.starttime = timer()
+            def on_epoch_end(self, epoch, logs={}):
+                self.logs.append(timer()-self.starttime)
+        cb = TimingCallback()
+        train_loss = pd.DataFrame()
+        train_mae = pd.DataFrame()
+        model = Sequential()
+        model.add(LSTM(25,activation ="relu", return_sequences = True, input_shape = (n_input, n_features)))
+        model.add(Dropout(0.1))
+        model.add(LSTM(20, activation ="relu"))
+        model.add(Dense(1))
+        opt = Adam(learning_rate=0.01)
+        model.compile(optimizer = opt, loss = "mse", metrics=['mse','mae','mape'])
+        history = model.fit(train_X,train_y,epochs=20,batch_size=60,callbacks=[cb],verbose=1,shuffle = False)
+        train_loss[str(i)] = history.history["loss"]
+        train_mae[str(i)] = history.history["mae"]
+        filename = 'Catchment_SE_Models_inputs/model_' + "2"+ '.h5'
+        model.save(filename)
+        print('>Saved %s' % filename)   
+        yhat = model.predict(test_X)
+Store columns
+        fold_yhats.append(yhat.reshape(len(yhat),1))
+Store fold yhats as columns
+        meta_X2.append(hstack(fold_yhats))
+    return vstack(meta_X2), asarray(meta_y2)
+MLP base model
+def get_out_of_fold_predictions(X, y):
+    meta_X3, meta_y3 = list(), list()
+    n_input = X.shape[1] * X.shape[2]
+    X = X.reshape((X.shape[0], n_input))
+Define split of data
+    kfold = KFold(n_splits=5, shuffle=False)
+Enumerate splits
+    for train_ix, test_ix in kfold.split(X):
+        fold_yhats = list()
+Get data
+        train_X, test_X = X[train_ix], X[test_ix]
+        train_y, test_y = y[train_ix], y[test_ix]
+        meta_y3.extend(test_y)
+Fit and make predictions with each sub-model
+        class TimingCallback(keras.callbacks.Callback):
+            def __init__(self, logs={}):
+                self.logs=[]
+            def on_epoch_begin(self, epoch, logs={}):
+                self.starttime = timer()
+            def on_epoch_end(self, epoch, logs={}):
+                self.logs.append(timer()-self.starttime)
+        cb = TimingCallback()
+        train_loss = pd.DataFrame()
+        train_mae = pd.DataFrame()
+        model = Sequential()
+        model.add(Dense(35, activation ="relu",input_dim = n_input))#
+        model.add(Dropout(0))
+        model.add(Dense(10, activation ="relu"))
+        model.add(Dense(1))
+        opt = Adam(learning_rate=0.001)
+        model.compile(optimizer = opt, loss = "mse", metrics=['mse','mae','mape'])
+        history = model.fit(train_X,train_y,epochs=30,batch_size=10,callbacks=[cb],verbose=1,shuffle = False)
+        train_loss[str(i)] = history.history["loss"]
+        train_mae[str(i)] = history.history["mae"]
+Store columns
+        filename = 'Borkena_SE_Models_inputs/model_' + "3"+ '.h5'
+        model.save(filename)
+        print('>Saved %s' % filename)       
+        yhat = model.predict(test_X)
+        fold_yhats.append(yhat.reshape(len(yhat),1))
+Store fold yhats as columns
+        meta_X3.append(hstack(fold_yhats))
+    return vstack(meta_X3), asarray(meta_y3)
+CNN-GRU base model
+def get_out_of_fold_predictions4(X, y):
+    meta_X4, meta_y4 = list(), list()
+    n_input= X.shape[1]
+    n_features = 51
+    n_seq = 1
+    X = X.reshape((X.shape[0],n_seq, n_input,n_features))
+Define split of data
+    kfold = KFold(n_splits=5, shuffle=False)
+Enumerate splits
+    for train_ix, test_ix in kfold.split(X):
+        fold_yhats = list()
+Get data
+        train_X, test_X = X[train_ix], X[test_ix]
+        train_y, test_y = y[train_ix], y[test_ix]
+        meta_y4.extend(test_y)   
+        class TimingCallback(keras.callbacks.Callback):
+            def __init__(self, logs={}):
+                self.logs=[]
+            def on_epoch_begin(self, epoch, logs={}):
+                self.starttime = timer()
+            def on_epoch_end(self, epoch, logs={}):
+                self.logs.append(timer()-self.starttime)
+        cb = TimingCallback()
+        train_loss = pd.DataFrame()
+        train_mae = pd.DataFrame()
+        model = Sequential()
+        model.add(TimeDistributed(Conv1D(filters=24, kernel_size=2, activation ="relu"),input_shape = (        None, n_input, n_features)))
+        model.add(TimeDistributed(AveragePooling1D(pool_size=2)))
+        model.add(TimeDistributed(Flatten()))
+        model.add(GRU(10,activation ="relu", return_sequences = True))
+        model.add(Dropout(0))
+        model.add(GRU(25, activation ="relu"))
+        model.add(Dense(1))
+        opt = Adam(learning_rate=0.0001)
+        model.compile(optimizer = opt, loss = "mse", metrics=['mse','mae','mape'])
+        history = model.fit(train_X,train_y,epochs=100,batch_size=80,callbacks=[cb],verbose=1,shuffle = False)
+        train_loss[str(i)] = history.history["loss"]
+        train_mae[str(i)] = history.history["mae"]
+        filename = 'Catchment_SE_Models_inputs/model_' + "4"+ '.h5'
+        model.save(filename)
+        print('>Saved %s' % filename)
+        yhat = model.predict(test_X)
+Store columns
+        fold_yhats.append(yhat.reshape(len(yhat),1))
+Store fold yhats as columns
+        meta_X4.append(hstack(fold_yhats))
+    return vstack(meta_X4), asarray(meta_y4)
+SVR base model
+def get_out_of_fold_predictions5(X, y):
+    meta_X5, meta_y5 = list(), list()
+    n_input = X.shape[1] * X.shape[2]
+    X = X.reshape((X.shape[0], n_input))
+Define split of data
+    kfold = KFold(n_splits=5, shuffle=False)
+Enumerate splits
+    for train_ix, test_ix in kfold.split(X):
+        fold_yhats = list()
+Get data
+        train_X, test_X = X[train_ix], X[test_ix]
+        train_y, test_y = y[train_ix], y[test_ix]
+        meta_y5.extend(test_y)    
+        class TimingCallback(keras.callbacks.Callback):
+            def __init__(self, logs={}):
+                self.logs=[]
+            def on_epoch_begin(self, epoch, logs={}):
+                self.starttime = timer()
+            def on_epoch_end(self, epoch, logs={}):
+                self.logs.append(timer()-self.starttime)
+        cb = TimingCallback()
+        train_loss = pd.DataFrame()
+        train_mae = pd.DataFrame()
+        model= SVR(C=0.1, gamma=0.001, kernel = 'rbf')
+        model.fit(train_X, train_y)
+        filename = 'Catchment_SE_Models_input/model_' + "5"+ '.h5'
+        pickle.dump(model, open(filename, 'wb'))
+        print('>Saved %s' % filename)
+        yhat = model.predict(test_X)
+Store columns
+        fold_yhats.append(yhat.reshape(len(yhat),1))
+Store fold yhats as columns
+        meta_X5.append(hstack(fold_yhats))
+    return vstack(meta_X5), asarray(meta_y5)
+LASSO base model
+def get_out_of_fold_predictions6(X, y):
+    meta_X6, meta_y6 = list(), list()
+    n_input = X.shape[1] * X.shape[2]
+    X = X.reshape((X.shape[0], n_input))
+Define split of data
+    kfold = KFold(n_splits=5, shuffle=False)
+Enumerate splits
+    for train_ix, test_ix in kfold.split(X):
+        fold_yhats = list()
+Get data
+        train_X, test_X = X[train_ix], X[test_ix]
+        train_y, test_y = y[train_ix], y[test_ix]
+        meta_y6.extend(test_y)    
+        class TimingCallback(keras.callbacks.Callback):
+            def __init__(self, logs={}):
+                self.logs=[]
+            def on_epoch_begin(self, epoch, logs={}):
+                self.starttime = timer()
+            def on_epoch_end(self, epoch, logs={}):
+                self.logs.append(timer()-self.starttime)
+        cb = TimingCallback()
+Fit model
+        model = Lasso(alpha=0)
+        model.fit(train_X, train_y)
+        train_loss = pd.DataFrame()
+        train_mae = pd.DataFrame()
+        filename = 'Catchment_SE_Models_input/model_' + "6"+ '.h5'
+        pickle.dump(model, open(filename, 'wb'))
+        print('>Saved %s' % filename)
+        yhat = model.predict(test_X)
+Store columns
+        fold_yhats.append(yhat.reshape(len(yhat),1))
+Store fold yhats as columns
+        meta_X6.append(hstack(fold_yhats))
+    return vstack(meta_X6), asarray(meta_y6)
+XGB base model
+	def get_out_of_fold_predictions7(X, y):
+    meta_X7, meta_y7 = list(), list()
+    n_input = X.shape[1] * X.shape[2]
+    X = X.reshape((X.shape[0], n_input))
+Define split of data
+    kfold = KFold(n_splits=5, shuffle=False)
+Enumerate splits
+    for train_ix, test_ix in kfold.split(X):
+        fold_yhats = list()
+Get data
+        train_X, test_X = X[train_ix], X[test_ix]
+        train_y, test_y = y[train_ix], y[test_ix]
+        meta_y7.extend(test_y)    
+        class TimingCallback(keras.callbacks.Callback):
+            def __init__(self, logs={}):
+                self.logs=[]
+            def on_epoch_begin(self, epoch, logs={}):
+                self.starttime = timer()
+            def on_epoch_end(self, epoch, logs={}):
+                self.logs.append(timer()-self.starttime)
+        cb = TimingCallback()
+Fit model
+        model = XGBRegressor(base_score=1, booster='gbtree', colsample_bylevel=1,
+             colsample_bynode=1, colsample_bytree=1, enable_categorical=False,
+             gamma=0, gpu_id=-1, importance_type=None,
+             interaction_constraints='', learning_rate=0.05, max_delta_step=0,
+             max_depth=15, min_child_weight=3,
+             monotone_constraints='()', n_estimators=1500, n_jobs=4,
+             num_parallel_tree=1, predictor='auto', random_state=0, reg_alpha=0,
+             reg_lambda=1, scale_pos_weight=1, subsample=1, tree_method='exact',
+             validate_parameters=1, verbosity=None)
+        model.fit(train_X, train_y)
+        train_loss = pd.DataFrame()
+        train_mae = pd.DataFrame()
+        filename = 'Catchment_SE_Models_input/model_' + "7"+ '.h5'
+        pickle.dump(model, open(filename, 'wb'))
+        print('>Saved %s' % filename)
+        yhat = model.predict(test_X)
+Store columns
+        fold_yhats.append(yhat.reshape(len(yhat),1))
+Store fold yhats as columns
+        meta_X7.append(hstack(fold_yhats))
+    return vstack(meta_X7), asarray(meta_y7)
+Linear base model
+def get_out_of_fold_predictions8(X, y):
+    meta_X8, meta_y8 = list(), list()
+    n_input = X.shape[1] * X.shape[2]
+    X = X.reshape((X.shape[0], n_input))
+Define split of data
+    kfold = KFold(n_splits=5, shuffle=False)
+Enumerate splits
+    for train_ix, test_ix in kfold.split(X):
+        fold_yhats = list()
+Get data
+        train_X, test_X = X[train_ix], X[test_ix]
+        train_y, test_y = y[train_ix], y[test_ix]
+        meta_y8.extend(test_y)    
+        class TimingCallback(keras.callbacks.Callback):
+            def __init__(self, logs={}):
+                self.logs=[]
+            def on_epoch_begin(self, epoch, logs={}):
+                self.starttime = timer()
+            def on_epoch_end(self, epoch, logs={}):
+                self.logs.append(timer()-self.starttime)
+        cb = TimingCallback()
+Fit model
+        model = LinearRegression()
+        model.fit(train_X, train_y)
+        train_loss = pd.DataFrame()
+        train_mae = pd.DataFrame()
+        filename = 'Catchment_SE_Models_input/model_' + "8"+ '.h5'
+        pickle.dump(model, open(filename, 'wb'))
+        print('>Saved %s' % filename)
+        yhat = model.predict(test_X)
+Store columns
+        fold_yhats.append(yhat.reshape(len(yhat),1))
+Store fold yhats as columns
+        meta_X8.append(hstack(fold_yhats))
+    return vstack(meta_X8), asarray(meta_y8)
+Generate base model predictions (meta data)
+meta_X1, meta_y= get_out_of_fold_predictions1(trainx,trainy)
+print('Meta ', meta_X1.shape, meta_y.shape)
+meta_X2, meta_y= get_out_of_fold_predictions2(trainx,trainy)
+print('Meta ', meta_X2.shape, meta_y.shape)
+meta_X3, meta_y = get_out_of_fold_predictions(trainx,trainy)
+print('Meta ', meta_X3.shape, meta_y.shape)
+meta_X4, meta_y= get_out_of_fold_predictions4(trainx,trainy)
+print('Meta ', meta_X4.shape, meta_y.shape)
+meta_X5, meta_y= get_out_of_fold_predictions5(trainx,trainy)
+print('Meta ', meta_X5.shape, meta_y.shape)
+meta_X5, meta_y= get_out_of_fold_predictions5(trainx,trainy)
+print('Meta ', meta_X5.shape, meta_y.shape)
+meta_X6, meta_y= get_out_of_fold_predictions6(trainx,trainy)
+print('Meta ', meta_X6.shape, meta_y.shape)
+meta_X7, meta_y= get_out_of_fold_predictions7(trainx,trainy)
+print('Meta ', meta_X7.shape, meta_y.shape)
+meta_X8, meta_y= get_out_of_fold_predictions8(trainx,trainy)
+print('Meta ', meta_X8.shape, meta_y.shape)
+The function to call trained ensemble base models
+def get_models(n_models):
+    all_models = list()
+    for i in range(n_models):
+Define filename for this ensemble
+        filename = 'Catchment_SE_Models_input/model_' + str(i + 1) + '.h5'
+Load model from file
+        try:
+            modell = load_model(filename)
+        except:
+            modelp = pickle.load(open(filename, 'rb'))
+Add to list of members
+        try:
+            all_models.append(modelp)
+        except:
+            all_models.append(modell)
+        print('>loaded %s' % filename)
+    return all_models
+The function to call trained non-ensemble base models
+def get_basemodels(n_models):
+    all_models = list()
+    for i in range(n_models):
+Define filename for this ensemble
+        filename = 'Catchment_Base_Models_input/model_' + str(i + 1) + '.h5'
+Load model from file
+        try:
+            modell = load_model(filename)
+        except:
+            modelp = pickle.load(open(filename, 'rb'))
+Add to list of members
+        try:
+            all_models.append(modelp)
+        except:
+            all_models.append(modell)
+        print('>loaded %s' % filename)
+    return all_models
+Call trained ensemble base models
+n_members = 8
+models =get_models(n_members)
+print('Loaded %d models' % len(models))
+Call trained non-ensemble base models
+n_members = 8
+basemodels =get_basemodels(n_members)
+print('Loaded %d models' % len(basemodels))
+Stack base model predictions of all models (stacked meta data)
+meta_x = np.hstack((meta_X1,meta_X2,meta_X3,meta_X4,meta_X5,meta_X6,meta_X7,meta_X8))
+The function for Bayesian model averaging with linear regression (BMA)
+class BMA:    
+    def __init__(self, y, X, **kwargs):
+        self.y = y
+        self.X = X
+        self.names = list(X.columns)
+        self.nRows, self.nCols = np.shape(X)
+        self.likelihoods = np.zeros(self.nCols)
+        self.coefficients = np.zeros(self.nCols)
+        self.probabilities = np.zeros(self.nCols)
+        self.names = list(X.columns)
+        if 'MaxVars' in kwargs.keys():
+            self.MaxVars = kwargs['MaxVars']
+        else:
+            self.MaxVars = self.nCols  
+        if 'Priors' in kwargs.keys():
+            if np.size(kwargs['Priors']) == self.nCols:
+                self.Priors = kwargs['Priors']
+            else:
+                print("WARNING: Provided priors error.  Using equal priors instead.")
+                print("The priors should be a numpy array of length equal tot he number of regressor variables.")
+                self.Priors = np.ones(self.nCols)  
+        else:
+            self.Priors = np.ones(self.nCols)  
+    def fit(self):
+        likelighood_sum = 0
+        for num_elements in range(1,self.MaxVars+1): 
+            model_index_sets = list(combinations(list(range(self.nCols)), num_elements)) 
+            for model_index_set in model_index_sets:
+                model_X = self.X.iloc[:,list(model_index_set)]
+                model_regr = LinearRegression()
+                model_regr.fit(model_X,self.y)
+                num_params = len(model_regr.coef_) + 1
+                yhat = model_regr.predict(model_X)
+                mse = mean_squared_error(self.y, yhat)
+                model_likelihood = len(y)*log(mse) + num_params * log(len(y))
+                print("Model Variables:",model_index_set,"likelihood=",model_likelihood)
+                likelighood_sum = likelighood_sum + model_likelihood
+                for idx, i in zip(model_index_set, range(num_elements)):
+                    self.likelihoods[idx] = self.likelihoods[idx] + model_likelihood
+                    self.coefficients[idx] = self.coefficients[idx] + model_regr.coef_[i]*model_likelihood
+        self.probabilities = self.likelihoods/likelighood_sum
+        self.coefficients = self.coefficients/likelighood_sum
+        return self
+        
+    def summary(self):
+        df = pd.DataFrame([self.names, list(self.probabilities), list(self.coefficients)], 
+             ["Variable Name", "Probability", "Avg. Coefficient"]).T
+        return df       
+Run BMA function and save average coefficients for each variable
+meta_x = pd.DataFrame(meta_x,columns =["GRU","LSTM","MLP","CNN_GRU","SVR","LASSO","XGBOOST","LR"]) 
+meta_y = pd.DataFrame(meta_y,columns =["Qobs"]) 
+X = meta_x[["GRU","LSTM","MLP","CNN_GRU","SVR","LASSO","XGBOOST","LR"]]
+y = meta_y["Qobs"]
+result = BMA(y,add_constant(X)).fit()
+coeff = result.summary()
+score_m1 = coeff.loc[1,"Avg. Coefficient"]
+score_m2 = coeff.loc[2,"Avg. Coefficient"]
+score_m3 = coeff.loc[3,"Avg. Coefficient"]
+score_m4 = coeff.loc[4,"Avg. Coefficient"]
+score_m5 = coeff.loc[5,"Avg. Coefficient"]
+score_m6 = coeff.loc[6,"Avg. Coefficient"]
+score_m7 = coeff.loc[7,"Avg. Coefficient"]
+score_m8 = coeff.loc[8,"Avg. Coefficient"]
+score = np.hstack((score_m1,score_m2,score_m3,score_m4,score_m5,score_m6,score_m7,score_m8))
+score = score.reshape((1,score.shape[0]))
+df = pd.DataFrame(meta_x, columns=['GRU', 'LSTM', 'MLP', 'CNN-GRU', 'SVR', 'Lasso', 'XGB', 'LR']) 
+s = pd.DataFrame(score, columns=['GRU', 'LSTM', 'MLP', 'CNN-GRU', 'SVR', 'Lasso', 'XGB', 'LR']) 
+multiply =df.multiply(np.array(s), axis='columns')
+multiply.loc[:,'Total'] = multiply.sum(axis=1)
+prediction = multiply['Total']
+prediction.shape 
+Predict with fitted meta model (BMA) and test data set
+def BMA_Ensemble_predictions(X, models):
+    meta_X = list()
+    yhat= list()
+    for model in models:
+        try:
+            yhat = model.predict(X)
+            meta_X.append(yhat.reshape(len(yhat),1))
+        except:
+            try:
+                yhat = model.predict(X.reshape((X.shape[0], (X.shape[1] * X.shape[2]))))
+                meta_X.append(yhat.reshape(len(yhat),1))
+            except:
+                try:
+                    n_input= X.shape[1]
+                    n_features = 51
+                    n_seq = 1
+                    yhat = model.predict(X.reshape((X.shape[0],n_seq, n_input,n_features)))
+                    meta_X.append(yhat.reshape(len(yhat),1))
+                except:
+                    print("data error")
+    meta_X = hstack(meta_X)
+    score = np.hstack((score_m1,score_m2,score_m3,score_m4,score_m5,score_m6,score_m7,score_m8))
+    score = score.reshape((1,score.shape[0]))
+    df = pd.DataFrame(meta_X, columns=['GRU', 'LSTM', 'MLP', 'CNN-GRU', 'SVR', 'Lasso', 'XGB', 'LR']) 
+    s = pd.DataFrame(score, columns=['GRU', 'LSTM', 'MLP', 'CNN-GRU', 'SVR', 'Lasso', 'XGB', 'LR']) 
+    multiply =df.multiply(np.array(s), axis='columns')
+    multiply.loc[:,'Total'] = multiply.sum(axis=1)
+    prediction = multiply['Total']
+    yhat = pd.DataFrame(prediction)
+    yhat.append(yhat)
+    return yhat
+Stack base model predictions and predict using the performance measures (WA)
+score_m1 = sum(score_m1)/len(score_m1)
+score_m2 = sum(score_m2)/len(score_m2)
+score_m3 = sum(score_m3)/len(score_m3)
+score_m4 = sum(score_m4)/len(score_m4)
+score_m5 = sum(score_m5)/len(score_m5)
+score_m6 = sum(score_m6)/len(score_m6)
+score_m7 = sum(score_m7)/len(score_m7)
+score_m8 = sum(score_m8)/len(score_m8)
+meta_x = np.hstack((meta_X1,meta_X2,meta_X3,meta_X4,meta_X5,meta_X6,meta_X7,meta_X8))
+score = np.hstack((score_m1,score_m2,score_m3,score_m4,score_m5,score_m6,score_m7,score_m8))
+score = score.reshape((1,score.shape[0]))
+df = pd.DataFrame(meta_x, columns=['GRU', 'LSTM', 'MLP', 'CNN-GRU', 'SVR', 'Lasso', 'XGB', 'LR']) 
+s = pd.DataFrame(score, columns=['GRU', 'LSTM', 'MLP', 'CNN-GRU', 'SVR', 'Lasso', 'XGB', 'LR']) 
+multiply =df.multiply(np.array(s), axis='columns')
+multiply.loc[:,'Total'] = multiply.sum(axis=1)
+summation = s.sum(axis=1)
+summation = pd.DataFrame(summation)
+prediction = multiply['Total']/summation.iloc[0,0]
+prediction.shape
+Predict with fitted meta model and test data set (WA)
+def WA_Ensemble_predictions(X, models):
+    meta_X = list()
+    yhat= list()
+    for model in models:
+        try:
+            yhat = model.predict(X)
+            meta_X.append(yhat.reshape(len(yhat),1))
+        except:
+            try:
+                yhat = model.predict(X.reshape((X.shape[0], (X.shape[1] * X.shape[2]))))
+                meta_X.append(yhat.reshape(len(yhat),1))
+            except:
+                try:
+                    n_input= X.shape[1]
+                    n_features = 51
+                    n_seq = 1
+                    yhat = model.predict(X.reshape((X.shape[0],n_seq, n_input,n_features)))
+                    meta_X.append(yhat.reshape(len(yhat),1))
+                except:
+                    print("data error")       
+    meta_X = hstack(meta_X)
+    score = np.hstack((score_m1,score_m2,score_m3,score_m4,score_m5,score_m6,score_m7,score_m8))
+    score = score.reshape((1,score.shape[0]))
+    df = pd.DataFrame(meta_X, columns=['GRU', 'LSTM', 'MLP', 'CNN-GRU', 'SVR', 'Lasso', 'XGB', 'LR']) 
+    s = pd.DataFrame(score, columns=['GRU', 'LSTM', 'MLP', 'CNN-GRU', 'SVR', 'Lasso', 'XGB', 'LR']) 
+    multiply =df.multiply(np.array(s), axis='columns')
+    multiply.loc[:,'Total'] = multiply.sum(axis=1)
+    summation = s.sum(axis=1)
+    summation = pd.DataFrame(summation)
+    prediction = multiply['Total']/summation.iloc[0,0]
+    yhat = pd.DataFrame(prediction)
+    yhat.append(yhat)
+    return yhat
+The function for meta model (ETR)
+def fit_meta_model(X, y):
+	model = ExtraTreesRegressor(n_estimators=500)
+	model.fit(X, y)
+	return model
+Fit meta model (ETR)
+meta_model = fit_meta_model(meta_x, meta_y)
+Predict with fitted meta model and test data set for ETRSE
+def super_learner_predictions_ETRSE(X, models, meta_model):
+    meta_X = list()
+    for model in models:
+        try:
+            yhat = model.predict(X)
+            meta_X.append(yhat.reshape(len(yhat),1))
+        except:
+            try:
+                yhat = model.predict(X.reshape((X.shape[0], (X.shape[1] * X.shape[2]))))
+                meta_X.append(yhat.reshape(len(yhat),1))
+            except:
+                try:
+                    n_input= X.shape[1]
+                    n_features = 51
+                    n_seq = 1
+                    yhat = model.predict(X.reshape((X.shape[0],n_seq, n_input,n_features)))
+                    meta_X.append(yhat.reshape(len(yhat),1))
+                except:
+                    print("data error")
+    meta_X = hstack(meta_X)
+    return meta_model.predict(meta_X)
+Predict and evaluate the performance of super ensemble models (BMA, WA, and ETR) 
+y_test = scalery.inverse_transform(testy)
+Predict with super ensemble model (BMA)
+y_pred = BMA_Ensemble_predictions(testx, models)
+y_pred = scalery.inverse_transform(y_pred)
+Predict with super ensemble model (WA)
+y_pred = WA_Ensemble_predictions(testx, models)
+y_pred = scalery.inverse_transform(y_pred)
+Predict with super ensemble model (ETR)
+y_pred = super_learner_predictions_ETRSE(testx, models, meta_model)
+y_pred = y_pred.reshape((y_pred.shape[0],1))
+y_pred = scalery.inverse_transform(y_pred)
+timeseriesdate = list(timeseries)[0:1]
+test = timeseries[-730:]
+date = test[timeseriesdate]
+y_pred_data = pd.DataFrame(y_pred)
+y_test_data = pd.DataFrame(y_test)
+date.set_index("date")
+xt=date["date"]
+xt= pd.DataFrame(xt)
+xt=xt.reset_index(inplace=False)
+xt=xt.drop("index",axis=1)
+yt= pd.DataFrame(y_test)
+yt=yt.reset_index(inplace=False)
+yt=yt.drop("index",axis=1)
+yp=y_pred_data[0]
+yp=pd.DataFrame(yp)
+xt.shape
+yp.shape
+Evaluating the performance 
+mse = mean_squared_error(y_test,y_pred)         
+mae = mean_absolute_error(y_test,y_pred)
+medae = median_absolute_error(y_test, y_pred) 
+mape= mean_absolute_percentage_error(y_test,y_pred)
+r2 = r2_score(y_test,y_pred)
+std = np.std(y_pred)
+corr=pearsonr(y_pred_data[0],y_test_data[0])[0]
+rmse = sqrt(mse)
+print('Super learner RMSE: %f' % rmse)
+print('Super learner MAE: %f' % mae)
+print('Super learner MEDAE: %f' %medae)
+print('Super learner corr: %f' %corr)
+print('Super learner std: %f' %std)
+print('Super learner R2: %f' %r2)
